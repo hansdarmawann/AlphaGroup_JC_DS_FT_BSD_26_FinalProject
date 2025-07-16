@@ -1,10 +1,12 @@
 import streamlit as st
-import joblib
+import cloudpickle
 import pandas as pd
 import numpy as np
 
-# Load model from dictionary
-model_bundle = joblib.load("Model/Model_Logreg_Telco_Churn_joblib.pkl")
+# ✅ Load model with cloudpickle
+with open("Model/Model_Logreg_Telco_Churn_cloud.pkl", "rb") as f:
+    model_bundle = cloudpickle.load(f)
+
 model = model_bundle["model"]
 
 st.title("📉 Telco Customer Churn Prediction")
@@ -42,7 +44,7 @@ payment_method = st.selectbox("Payment Method", [
 # --- PREDICTION ---
 if st.button("Predict Churn"):
     try:
-        # Build row with strict typing
+        # Strongly-typed input row
         row = {
             'gender': str(gender),
             'SeniorCitizen': int(1 if senior == "Yes" else 0),
@@ -65,17 +67,15 @@ if st.button("Predict Churn"):
             'PaymentMethod': str(payment_method)
         }
 
-        # Create input DataFrame
         input_data = pd.DataFrame([row])
 
-        # Debug view
+        # Debug
         st.subheader("📋 Debug Info")
         st.write("✅ FINAL input to model:")
         st.write(input_data)
         st.write("✅ FINAL dtypes:")
         st.write(input_data.dtypes)
 
-        # Prediction
         prediction = model.predict(input_data)[0]
         probability = model.predict_proba(input_data)[0][1]
 
