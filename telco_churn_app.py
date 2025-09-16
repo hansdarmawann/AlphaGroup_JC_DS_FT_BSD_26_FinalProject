@@ -10,15 +10,13 @@ from importlib import metadata as md
 # ========= CONFIG =========
 st.set_page_config(page_title="Telco Churn", page_icon="📉")
 
-# 🔑 Aman fallback: kalau secrets tidak ada → pakai default
-MODEL_URL = (
-    (st.secrets["MODEL_URL"] if "MODEL_URL" in st.secrets else "").strip()
-    or "https://drive.google.com/uc?export=download&id=1QlqQs2fGOV0stQ8VwPY5dus7WNW4Vkug"
-)
-MODEL_SHA256 = (
-    (st.secrets["MODEL_SHA256"] if "MODEL_SHA256" in st.secrets else "").strip()
-    or ""
-)
+# 🔑 Pakai .get() → aman walau secrets.toml tidak ada
+MODEL_URL = st.secrets.get(
+    "MODEL_URL",
+    "https://drive.google.com/uc?export=download&id=1QlqQs2fGOV0stQ8VwPY5dus7WNW4Vkug"
+).strip()
+
+MODEL_SHA256 = st.secrets.get("MODEL_SHA256", "").strip()
 
 # ========= ENV REPORT =========
 def v(pkg: str) -> str:
