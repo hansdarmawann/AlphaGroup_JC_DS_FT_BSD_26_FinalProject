@@ -1,40 +1,13 @@
 import streamlit as st
+import cloudpickle
 import pandas as pd
 import numpy as np
-from pathlib import Path
 
-# ====== IMPORT SEMUA DEPENDENSI YANG DIPAKAI DI TRAINING ======
-# contoh: uncomment/ubah sesuai yang kamu pakai
-# from category_encoders import TargetEncoder
-# from my_transforms import MyCustomBinner
+# ✅ Load model with cloudpickle
+with open("Model/Model_Logreg_Telco_Churn_cloud.pkl", "rb") as f:
+    model_bundle = cloudpickle.load(f)
 
-import cloudpickle  # jika tetap pakai pickle
-# Atau: import joblib
-
-st.set_page_config(page_title="Telco Churn", page_icon="📉")
-
-MODEL_PATH = Path("Model/Model_Logreg_Telco_Churn_cloud.pkl")
-# MODEL_PATH = Path("Model/model_sklearn.joblib")  # jika pakai joblib
-
-@st.cache_resource(show_spinner=True)
-def load_model():
-    if not MODEL_PATH.exists():
-        st.stop()  # biar errornya clear di UI
-    try:
-        with MODEL_PATH.open("rb") as f:
-            bundle = cloudpickle.load(f)
-        model = bundle["model"]
-        signature = bundle.get("signature", None)
-        return model, signature
-    except ModuleNotFoundError as e:
-        st.error(
-            "❌ ModuleNotFoundError saat load model. "
-            "Solusi: tambahkan modul/versi ke requirements.txt dan import class terkait sebelum load.\n\n"
-            f"Detail: {e}"
-        )
-        st.stop()
-
-model, signature = load_model()
+model = model_bundle["model"]
 
 st.title("📉 Telco Customer Churn Prediction")
 st.header("🔍 Enter Customer Information")
@@ -64,21 +37,22 @@ streaming_movies = st.selectbox("Streaming Movies", ["Yes", "No", "No internet s
 # Billing
 contract = st.selectbox("Contract", ["Month-to-month", "One year", "Two year"])
 paperless_billing = st.selectbox("Paperless Billing", ["Yes", "No"])
-payment_method = st.selectbox(
-    "Payment Method",
-    ["Electronic check", "Mailed check", "Bank transfer (automatic)", "Credit card (automatic)"]
-)
+payment_method = st.selectbox("Payment Method", [
+    "Electronic check", "Mailed check", "Bank transfer (automatic)", "Credit card (automatic)"
+])
 
+# --- PREDICTION ---
 if st.button("Predict Churn"):
     try:
+        # Strongly-typed input row
         row = {
             'gender': str(gender),
             'SeniorCitizen': int(1 if senior == "Yes" else 0),
             'Partner': str(partner),
             'Dependents': str(dependents),
-            'tenure': float(tenure),                # pakai float native utk portabilitas
-            'MonthlyCharges': float(monthly_charges),
-            'TotalCharges': float(total_charges),
+            'tenure': np.float64(tenure),
+            'MonthlyCharges': np.float64(monthly_charges),
+            'TotalCharges': np.float64(total_charges),
             'PhoneService': str(phone_service),
             'MultipleLines': str(multiple_lines),
             'InternetService': str(internet_service),
@@ -95,19 +69,20 @@ if st.button("Predict Churn"):
 
         input_data = pd.DataFrame([row])
 
+        # Debug
         st.subheader("📋 Debug Info")
         st.write("✅ FINAL input to model:")
         st.write(input_data)
         st.write("✅ FINAL dtypes:")
         st.write(input_data.dtypes)
 
-        pred = model.predict(input_data)[0]
-        proba = model.predict_proba(input_data)[0][1]
+        prediction = model.predict(input_data)[0]
+        probability = model.predict_proba(input_data)[0][1]
 
-        if int(pred) == 1:
-            st.error(f"⚠️ Customer Likely to Churn (Probability: {proba:.2%})")
+        if prediction == 1:
+            st.error(f"⚠️ Customer Likely to Churn (Probability: {probability:.2%})")
         else:
-            st.success(f"✅ Customer Likely to Stay (Probability: {proba:.2%})")
+            st.success(f"✅ Customer Likely to Stay (Probability: {probability:.2%})")
 
     except Exception as e:
         st.exception(f"❌ Prediction failed: {e}")
