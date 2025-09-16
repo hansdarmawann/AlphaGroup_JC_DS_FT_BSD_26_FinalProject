@@ -3,9 +3,10 @@ import pandas as pd
 import numpy as np
 import cloudpickle
 from pathlib import Path
+import sys, platform
+from importlib import metadata as md
 
-# >>> Import semua lib yg mungkin dipakai saat training (aman walau tdk dipakai persis)
-# Jika tak dipakai, bisa dihapus; kalau dipakai, ini membantu unpickle menemukan kelasnya.
+# ==== (Opsional) import komponen yang mungkin dipakai saat training ====
 try:
     import sklearn
     from sklearn.preprocessing import OneHotEncoder, StandardScaler
@@ -13,7 +14,7 @@ try:
     from sklearn.compose import ColumnTransformer
     from sklearn.pipeline import Pipeline
 except Exception:
-    pass
+    sklearn = None
 
 try:
     import imblearn
@@ -23,27 +24,31 @@ except Exception:
     imblearn = None
 
 try:
-    import category_encoders as ce  # kalau kamu pakai TargetEncoder dkk
+    import category_encoders as ce
 except Exception:
     ce = None
 
 st.set_page_config(page_title="Telco Churn", page_icon="📉")
 
-# ====== ENV REPORT ======
+# ====== ENV REPORT (aman) ======
+def v(pkg):
+    try:
+        return md.version(pkg)
+    except Exception:
+        return "not-installed"
+
 with st.expander("🧪 Environment report (Cloud)"):
-    def safe_ver(mod, name):
-        try:
-            return getattr(mod, "__version__", "unknown")
-        except Exception:
-            return "not-imported"
     st.write({
-        "python": st.runtime.scriptrunner.get_script_run_ctx().streamlit_version,  # versi Streamlit
-        "numpy": np.__version__,
-        "pandas": pd.__version__,
-        "cloudpickle": getattr(cloudpickle, "__version__", "unknown"),
-        "sklearn": safe_ver(sklearn, "sklearn") if 'sklearn' in globals() else "not-imported",
-        "imblearn": safe_ver(imblearn, "imblearn") if imblearn else "not-imported",
-        "category_encoders": safe_ver(ce, "category_encoders") if ce else "not-imported"
+        "python": sys.version.split()[0],
+        "platform": platform.platform(),
+        "streamlit": v("streamlit"),
+        "numpy": v("numpy"),
+        "pandas": v("pandas"),
+        "scikit-learn": v("scikit-learn"),
+        "imbalanced-learn": v("imbalanced-learn"),
+        "cloudpickle": v("cloudpickle"),
+        "scipy": v("scipy"),
+        "category-encoders": v("category-encoders"),
     })
 
 MODEL_PATH = Path("Model/Model_Logreg_Telco_Churn_cloud.pkl")
@@ -62,20 +67,19 @@ def load_model():
     except ModuleNotFoundError as e:
         st.error(
             "❌ ModuleNotFoundError saat load model. Tambahkan modul yg hilang ke requirements "
-            "dan import kelas terkait sebelum load.\n\n"
-            f"Detail: {e}"
+            "dan import kelas terkait sebelum load.\n\nDetail: "
+            + str(e)
         )
         st.stop()
     except AttributeError as e:
-        # Ini tipikal mismatch versi sklearn/imblearn → attribute hilang/berubah
         st.error(
-            "❌ AttributeError saat unpickle. Sangat mungkin karena perbedaan versi "
-            "scikit-learn/imbalanced-learn/numpy antara training vs Cloud.\n\n"
-            "🔧 Opsi fix cepat:\n"
-            "1) Samakan versi lib di `requirements.txt` dgn yang dipakai saat training; atau\n"
-            "2) Re-export / simpan ulang model di environment yg VERSINYA sama seperti Cloud; atau\n"
-            "3) Gunakan format penyimpanan yg lebih tahan versi (mis. `skops`).\n\n"
-            f"Detail: {e!s}"
+            "❌ AttributeError saat unpickle. Ini biasanya karena versi berbeda antara "
+            "lingkungan training dan Cloud (sklearn/imbalanced-learn/numpy).\n\n"
+            "🔧 Opsi:\n"
+            "1) Samakan versi di `requirements.txt` dengan versi training; ATAU\n"
+            "2) Re-train / re-save model memakai versi yang sama dengan yang terpasang di Cloud (lihat 'Environment report'); ATAU\n"
+            "3) Simpan pakai format lebih tahan versi seperti `skops`.\n\n"
+            f"Detail: {e}"
         )
         st.stop()
 
