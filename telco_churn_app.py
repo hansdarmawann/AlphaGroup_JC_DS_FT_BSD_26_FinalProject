@@ -4,12 +4,20 @@ import pandas as pd
 import numpy as np
 import cloudpickle
 from pathlib import Path
-import sys, platform, os
+import sys, platform, hashlib
 from importlib import metadata as md
 
-# ===== ENV REPORT =====
+# ========= CONFIG =========
 st.set_page_config(page_title="Telco Churn", page_icon="📉")
 
+# Direct download URL (RAW GitHub). Bisa diganti via Secrets: st.secrets["MODEL_URL"]
+MODEL_URL = (
+    st.secrets.get("MODEL_URL", "").strip()
+    or "https://raw.githubusercontent.com/hansdarmawann/AlphaGroup_JC_DS_FT_BSD_26_FinalProject/main/Model/Model_Logreg_Telco_Churn_cloud.pkl"
+)
+MODEL_SHA256 = st.secrets.get("MODEL_SHA256", "").strip()  # opsional
+
+# ========= ENV REPORT =========
 def v(pkg: str) -> str:
     try:
         return md.version(pkg)
@@ -30,7 +38,7 @@ with st.expander("🧪 Environment report (Cloud)", expanded=False):
         "category-encoders": v("category-encoders"),
     })
 
-# ==== (Opsional) import komponen training supaya unpickle mengenali kelas/objek ====
+# (opsional) import komponen training agar unpickle mengenali kelas/objek
 try:
     import sklearn
     from sklearn.preprocessing import OneHotEncoder, StandardScaler
@@ -50,14 +58,15 @@ try:
 except Exception:
     pass
 
-# ===== PATHS =====
+# ========= PATHS =========
 APP_DIR = Path(__file__).parent.resolve()
 MODEL_DIR = APP_DIR / "Model"
+MODEL_DIR.mkdir(parents=True, exist_ok=True)
 MODEL_PATH = MODEL_DIR / "Model_Logreg_Telco_Churn_cloud.pkl"
 
 st.caption(f"🔎 Looking for model at: `{MODEL_PATH}`")
 
-# ===== FILE EXPLORER (bantu cek LFS/pemanggilan path) =====
+# ========= UTILS =========
 def list_dir(p: Path, depth: int = 1):
     rows = []
     try:
@@ -97,81 +106,126 @@ with st.expander("🗂️ App root listing", expanded=False):
 with st.expander("📁 Model folder listing", expanded=True):
     st.dataframe(list_dir(MODEL_DIR, depth=1), use_container_width=True)
 
-# ===== MODEL LOADER (tanpa hard-stop) =====
+def is_lfs_pointer(path: Path) -> bool:
+    try:
+        if not path.exists(): return False
+        if path.stat().st_size >= 500:
+            return False
+        head = path.read_text(errors="ignore")
+        return "git-lfs.github.com/spec/v1" in head
+    except Exception:
+        return False
+
+def sha256_of(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+@st.cache_resource(show_spinner=True)
+def download_model(url: str, dest: Path) -> dict:
+    info = {"download_url": url, "saved_to": str(dest), "bytes": 0, "error": None}
+    try:
+        import requests
+        with requests.get(url, stream=True, timeout=60) as r:
+            r.raise_for_status()
+            total = 0
+            with dest.open("wb") as f:
+                for chunk in r.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        f.write(chunk)
+                        total += len(chunk)
+            info["bytes"] = total
+        return info
+    except Exception as e:
+        info["error"] = f"Download failed: {e}"
+        return info
+
+def ensure_model_available(path: Path, url: str, checksum: str = "") -> dict:
+    info = {
+        "path": str(path),
+        "exists_before": path.exists(),
+        "size_before": (path.stat().st_size if path.exists() else None),
+        "is_lfs_pointer_before": is_lfs_pointer(path) if path.exists() else None,
+        "download_attempted": False,
+        "download_info": None,
+        "exists_after": None,
+        "size_after": None,
+        "is_lfs_pointer_after": None,
+        "checksum_ok": None,
+        "error": None,
+    }
+
+    need_download = (not path.exists()) or is_lfs_pointer(path)
+    if need_download:
+        if not url or "PUT_YOUR_MODEL_URL_HERE" in url:
+            info["error"] = (
+                "Model file missing atau LFS pointer, dan MODEL_URL belum valid. "
+                "Set di Secrets atau konstanta MODEL_URL."
+            )
+        else:
+            info["download_attempted"] = True
+            dl = download_model(url, path)
+            info["download_info"] = dl
+            if dl.get("error"):
+                info["error"] = dl["error"]
+
+    info["exists_after"] = path.exists()
+    info["size_after"] = (path.stat().st_size if path.exists() else None)
+    info["is_lfs_pointer_after"] = is_lfs_pointer(path) if path.exists() else None
+
+    if info["exists_after"] and checksum:
+        try:
+            calc = sha256_of(path)
+            info["checksum_ok"] = (calc.lower() == checksum.lower())
+            if not info["checksum_ok"]:
+                info["error"] = f"Checksum mismatch. expected={checksum} got={calc}"
+        except Exception as e:
+            info["error"] = f"Checksum calc failed: {e}"
+
+    return info
+
+availability = ensure_model_available(MODEL_PATH, MODEL_URL, MODEL_SHA256)
+with st.expander("📦 Model availability & download status", expanded=True):
+    st.write(availability)
+
+# ========= LOAD MODEL =========
 @st.cache_resource(show_spinner=True)
 def try_load_model(model_path: Path):
-    """
-    Return: (model_or_none, info_dict)
-    info_dict = {
-      "exists": bool, "size": int|None, "is_lfs_pointer": bool,
-      "error": str|None, "path": str
-    }
-    """
-    info = {"exists": model_path.exists(), "size": None, "is_lfs_pointer": False,
-            "error": None, "path": str(model_path)}
-    if not info["exists"]:
-        info["error"] = f"Model file NOT FOUND at {model_path}"
-        return None, info
-
+    if not model_path.exists():
+        return None, f"Model not found at {model_path}"
+    if is_lfs_pointer(model_path):
+        return None, "File is a Git LFS pointer, not the actual model binary."
     try:
-        size = model_path.stat().st_size
-        info["size"] = size
-
-        # Deteksi Git LFS pointer
-        if size is not None and size < 500:
-            try:
-                head = model_path.read_text(errors="ignore")
-            except Exception:
-                head = ""
-            if "git-lfs.github.com/spec/v1" in head:
-                info["is_lfs_pointer"] = True
-                info["error"] = (
-                    "Model file looks like a Git LFS POINTER, not the real binary.\n"
-                    "→ Aktifkan Git LFS di repo & pastikan file besar terunduh di Cloud.\n"
-                    "   - `git lfs install`\n"
-                    "   - `git lfs track \"Model/*.pkl\"`\n"
-                    "   - commit `.gitattributes` & file `.pkl`\n"
-                    "   - push ulang, lalu redeploy app"
-                )
-                return None, info
-
         with model_path.open("rb") as f:
             bundle = cloudpickle.load(f)
         if not isinstance(bundle, dict) or "model" not in bundle:
-            info["error"] = "Bundle tidak valid (tidak ada key 'model')."
-            return None, info
-
-        return bundle["model"], info
-
+            return None, "Bundle invalid (missing key 'model')."
+        return bundle["model"], None
     except ModuleNotFoundError as e:
-        info["error"] = (
-            "ModuleNotFoundError saat unpickle. Tambahkan modul hilang ke requirements.txt "
-            "dan IMPORT kelas terkait sebelum load.\nDetail: " + str(e)
+        return None, (
+            "ModuleNotFoundError saat unpickle. Tambahkan modul ke requirements.txt "
+            f"dan import kelas terkait. Detail: {e}"
         )
-        return None, info
     except AttributeError as e:
-        info["error"] = (
-            "AttributeError saat unpickle. Biasanya karena versi paket berbeda antara "
-            "training vs Cloud (sklearn/imbalanced-learn/numpy). Samakan versi atau re-save model.\n"
-            "Detail: " + str(e)
+        return None, (
+            "AttributeError saat unpickle (versi paket berbeda?). "
+            f"Detail: {e}"
         )
-        return None, info
     except Exception as e:
-        info["error"] = f"Gagal load model: {e}"
-        return None, info
+        return None, f"Gagal load model: {e}"
 
-model, model_info = try_load_model(MODEL_PATH)
+model, load_err = try_load_model(MODEL_PATH)
 
-with st.expander("📦 Model diagnostics (detail)", expanded=True if model is None else False):
-    st.write(model_info)
-
-if model is None:
-    # Tampilkan pesan jelas, tapi JANGAN stop — biar UI tetap muncul untuk debugging
-    st.error("❌ Model belum berhasil di-load. Lihat panel '📦 Model diagnostics' & '📁 Model folder listing' di atas.")
+if load_err:
+    st.error("❌ Model belum berhasil di-load.")
+    with st.expander("🔍 Load error detail", expanded=True):
+        st.code(load_err, language="text")
 else:
     st.success("✅ Model loaded successfully.")
 
-# ===== UI =====
+# ========= UI FORM =========
 st.title("📉 Telco Customer Churn Prediction")
 st.header("🔍 Enter Customer Information")
 
@@ -241,7 +295,6 @@ if st.button("Predict Churn", disabled=predict_disabled):
             st.error(f"⚠️ Customer Likely to Churn (Probability: {proba:.2%})")
         else:
             st.success(f"✅ Customer Likely to Stay (Probability: {proba:.2%})")
-
     except Exception as e:
         st.exception(f"❌ Prediction failed: {e}")
 elif predict_disabled:
