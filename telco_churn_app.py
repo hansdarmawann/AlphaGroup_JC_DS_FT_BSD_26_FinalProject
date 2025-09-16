@@ -1,113 +1,82 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import cloudpickle
 from pathlib import Path
 
-# ====== IMPORT SEMUA DEPENDENSI YANG DIPAKAI DI TRAINING ======
-# contoh: uncomment/ubah sesuai yang kamu pakai
-# from category_encoders import TargetEncoder
-# from my_transforms import MyCustomBinner
+# >>> Import semua lib yg mungkin dipakai saat training (aman walau tdk dipakai persis)
+# Jika tak dipakai, bisa dihapus; kalau dipakai, ini membantu unpickle menemukan kelasnya.
+try:
+    import sklearn
+    from sklearn.preprocessing import OneHotEncoder, StandardScaler
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.compose import ColumnTransformer
+    from sklearn.pipeline import Pipeline
+except Exception:
+    pass
 
-import cloudpickle  # jika tetap pakai pickle
-# Atau: import joblib
+try:
+    import imblearn
+    from imblearn.over_sampling import SMOTE
+    from imblearn.pipeline import Pipeline as ImbPipeline
+except Exception:
+    imblearn = None
+
+try:
+    import category_encoders as ce  # kalau kamu pakai TargetEncoder dkk
+except Exception:
+    ce = None
 
 st.set_page_config(page_title="Telco Churn", page_icon="📉")
 
+# ====== ENV REPORT ======
+with st.expander("🧪 Environment report (Cloud)"):
+    def safe_ver(mod, name):
+        try:
+            return getattr(mod, "__version__", "unknown")
+        except Exception:
+            return "not-imported"
+    st.write({
+        "python": st.runtime.scriptrunner.get_script_run_ctx().streamlit_version,  # versi Streamlit
+        "numpy": np.__version__,
+        "pandas": pd.__version__,
+        "cloudpickle": getattr(cloudpickle, "__version__", "unknown"),
+        "sklearn": safe_ver(sklearn, "sklearn") if 'sklearn' in globals() else "not-imported",
+        "imblearn": safe_ver(imblearn, "imblearn") if imblearn else "not-imported",
+        "category_encoders": safe_ver(ce, "category_encoders") if ce else "not-imported"
+    })
+
 MODEL_PATH = Path("Model/Model_Logreg_Telco_Churn_cloud.pkl")
-# MODEL_PATH = Path("Model/model_sklearn.joblib")  # jika pakai joblib
 
 @st.cache_resource(show_spinner=True)
 def load_model():
     if not MODEL_PATH.exists():
-        st.stop()  # biar errornya clear di UI
+        st.error(f"Model file not found at: {MODEL_PATH}")
+        st.stop()
     try:
         with MODEL_PATH.open("rb") as f:
             bundle = cloudpickle.load(f)
         model = bundle["model"]
-        signature = bundle.get("signature", None)
-        return model, signature
+        sig = bundle.get("signature")
+        return model, sig
     except ModuleNotFoundError as e:
         st.error(
-            "❌ ModuleNotFoundError saat load model. "
-            "Solusi: tambahkan modul/versi ke requirements.txt dan import class terkait sebelum load.\n\n"
+            "❌ ModuleNotFoundError saat load model. Tambahkan modul yg hilang ke requirements "
+            "dan import kelas terkait sebelum load.\n\n"
             f"Detail: {e}"
+        )
+        st.stop()
+    except AttributeError as e:
+        # Ini tipikal mismatch versi sklearn/imblearn → attribute hilang/berubah
+        st.error(
+            "❌ AttributeError saat unpickle. Sangat mungkin karena perbedaan versi "
+            "scikit-learn/imbalanced-learn/numpy antara training vs Cloud.\n\n"
+            "🔧 Opsi fix cepat:\n"
+            "1) Samakan versi lib di `requirements.txt` dgn yang dipakai saat training; atau\n"
+            "2) Re-export / simpan ulang model di environment yg VERSINYA sama seperti Cloud; atau\n"
+            "3) Gunakan format penyimpanan yg lebih tahan versi (mis. `skops`).\n\n"
+            f"Detail: {e!s}"
         )
         st.stop()
 
 model, signature = load_model()
-
-st.title("📉 Telco Customer Churn Prediction")
-st.header("🔍 Enter Customer Information")
-
-# --- INPUT FORM ---
-gender = st.selectbox("Gender", ["Male", "Female"])
-senior = st.selectbox("Senior Citizen", ["Yes", "No"])
-partner = st.selectbox("Has Partner", ["Yes", "No"])
-dependents = st.selectbox("Has Dependents", ["Yes", "No"])
-
-# Numeric inputs
-tenure = st.slider("Tenure (months)", 0, 72, 12)
-monthly_charges = st.number_input("Monthly Charges ($)", 0.0, 200.0, 70.0)
-total_charges = st.number_input("Total Charges ($)", 0.0, 10000.0, 2000.0)
-
-# Services
-phone_service = st.selectbox("Phone Service", ["Yes", "No"])
-multiple_lines = st.selectbox("Multiple Lines", ["Yes", "No", "No phone service"])
-internet_service = st.selectbox("Internet Service", ["DSL", "Fiber optic", "No"])
-online_security = st.selectbox("Online Security", ["Yes", "No", "No internet service"])
-online_backup = st.selectbox("Online Backup", ["Yes", "No", "No internet service"])
-device_protection = st.selectbox("Device Protection", ["Yes", "No", "No internet service"])
-tech_support = st.selectbox("Tech Support", ["Yes", "No", "No internet service"])
-streaming_tv = st.selectbox("Streaming TV", ["Yes", "No", "No internet service"])
-streaming_movies = st.selectbox("Streaming Movies", ["Yes", "No", "No internet service"])
-
-# Billing
-contract = st.selectbox("Contract", ["Month-to-month", "One year", "Two year"])
-paperless_billing = st.selectbox("Paperless Billing", ["Yes", "No"])
-payment_method = st.selectbox(
-    "Payment Method",
-    ["Electronic check", "Mailed check", "Bank transfer (automatic)", "Credit card (automatic)"]
-)
-
-if st.button("Predict Churn"):
-    try:
-        row = {
-            'gender': str(gender),
-            'SeniorCitizen': int(1 if senior == "Yes" else 0),
-            'Partner': str(partner),
-            'Dependents': str(dependents),
-            'tenure': float(tenure),                # pakai float native utk portabilitas
-            'MonthlyCharges': float(monthly_charges),
-            'TotalCharges': float(total_charges),
-            'PhoneService': str(phone_service),
-            'MultipleLines': str(multiple_lines),
-            'InternetService': str(internet_service),
-            'OnlineSecurity': str(online_security),
-            'OnlineBackup': str(online_backup),
-            'DeviceProtection': str(device_protection),
-            'TechSupport': str(tech_support),
-            'StreamingTV': str(streaming_tv),
-            'StreamingMovies': str(streaming_movies),
-            'Contract': str(contract),
-            'PaperlessBilling': str(paperless_billing),
-            'PaymentMethod': str(payment_method)
-        }
-
-        input_data = pd.DataFrame([row])
-
-        st.subheader("📋 Debug Info")
-        st.write("✅ FINAL input to model:")
-        st.write(input_data)
-        st.write("✅ FINAL dtypes:")
-        st.write(input_data.dtypes)
-
-        pred = model.predict(input_data)[0]
-        proba = model.predict_proba(input_data)[0][1]
-
-        if int(pred) == 1:
-            st.error(f"⚠️ Customer Likely to Churn (Probability: {proba:.2%})")
-        else:
-            st.success(f"✅ Customer Likely to Stay (Probability: {proba:.2%})")
-
-    except Exception as e:
-        st.exception(f"❌ Prediction failed: {e}")
