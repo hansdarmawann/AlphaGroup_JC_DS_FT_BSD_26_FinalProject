@@ -10,10 +10,10 @@ from importlib import metadata as md
 # ========= CONFIG =========
 st.set_page_config(page_title="Telco Churn", page_icon="📉")
 
-# Direct download URL (RAW GitHub). Bisa diganti via Secrets: st.secrets["MODEL_URL"]
+# Direct download URL (Google Drive)
 MODEL_URL = (
     st.secrets.get("MODEL_URL", "").strip()
-    or "https://raw.githubusercontent.com/hansdarmawann/AlphaGroup_JC_DS_FT_BSD_26_FinalProject/main/Model/Model_Logreg_Telco_Churn_cloud.pkl"
+    or "https://drive.google.com/uc?export=download&id=1QlqQs2fGOV0stQ8VwPY5dus7WNW4Vkug"
 )
 MODEL_SHA256 = st.secrets.get("MODEL_SHA256", "").strip()  # opsional
 
@@ -38,26 +38,6 @@ with st.expander("🧪 Environment report (Cloud)", expanded=False):
         "category-encoders": v("category-encoders"),
     })
 
-# (opsional) import komponen training agar unpickle mengenali kelas/objek
-try:
-    import sklearn
-    from sklearn.preprocessing import OneHotEncoder, StandardScaler
-    from sklearn.linear_model import LogisticRegression
-    from sklearn.compose import ColumnTransformer
-    from sklearn.pipeline import Pipeline
-except Exception:
-    pass
-try:
-    import imblearn
-    from imblearn.over_sampling import SMOTE
-    from imblearn.pipeline import Pipeline as ImbPipeline
-except Exception:
-    pass
-try:
-    import category_encoders as ce
-except Exception:
-    pass
-
 # ========= PATHS =========
 APP_DIR = Path(__file__).parent.resolve()
 MODEL_DIR = APP_DIR / "Model"
@@ -67,45 +47,6 @@ MODEL_PATH = MODEL_DIR / "Model_Logreg_Telco_Churn_cloud.pkl"
 st.caption(f"🔎 Looking for model at: `{MODEL_PATH}`")
 
 # ========= UTILS =========
-def list_dir(p: Path, depth: int = 1):
-    rows = []
-    try:
-        if p.exists():
-            for item in sorted(p.iterdir()):
-                size = None
-                try:
-                    if item.is_file():
-                        size = item.stat().st_size
-                except Exception:
-                    pass
-                rows.append({
-                    "path": str(item.relative_to(APP_DIR)),
-                    "type": "file" if item.is_file() else "dir",
-                    "size_bytes": size
-                })
-                if item.is_dir() and depth > 1:
-                    for sub in sorted(item.iterdir()):
-                        size2 = None
-                        try:
-                            if sub.is_file(): size2 = sub.stat().st_size
-                        except Exception:
-                            pass
-                        rows.append({
-                            "path": str(sub.relative_to(APP_DIR)),
-                            "type": "file" if sub.is_file() else "dir",
-                            "size_bytes": size2
-                        })
-        else:
-            rows.append({"path": str(p), "type": "missing", "size_bytes": None})
-    except Exception as e:
-        rows.append({"path": f"ERROR reading {p}", "type": "error", "size_bytes": str(e)})
-    return pd.DataFrame(rows)
-
-with st.expander("🗂️ App root listing", expanded=False):
-    st.dataframe(list_dir(APP_DIR, depth=1), use_container_width=True)
-with st.expander("📁 Model folder listing", expanded=True):
-    st.dataframe(list_dir(MODEL_DIR, depth=1), use_container_width=True)
-
 def is_lfs_pointer(path: Path) -> bool:
     try:
         if not path.exists(): return False
@@ -143,48 +84,18 @@ def download_model(url: str, dest: Path) -> dict:
         return info
 
 def ensure_model_available(path: Path, url: str, checksum: str = "") -> dict:
-    info = {
-        "path": str(path),
-        "exists_before": path.exists(),
-        "size_before": (path.stat().st_size if path.exists() else None),
-        "is_lfs_pointer_before": is_lfs_pointer(path) if path.exists() else None,
-        "download_attempted": False,
-        "download_info": None,
-        "exists_after": None,
-        "size_after": None,
-        "is_lfs_pointer_after": None,
-        "checksum_ok": None,
-        "error": None,
-    }
-
     need_download = (not path.exists()) or is_lfs_pointer(path)
     if need_download:
-        if not url or "PUT_YOUR_MODEL_URL_HERE" in url:
-            info["error"] = (
-                "Model file missing atau LFS pointer, dan MODEL_URL belum valid. "
-                "Set di Secrets atau konstanta MODEL_URL."
-            )
-        else:
-            info["download_attempted"] = True
-            dl = download_model(url, path)
-            info["download_info"] = dl
-            if dl.get("error"):
-                info["error"] = dl["error"]
-
-    info["exists_after"] = path.exists()
-    info["size_after"] = (path.stat().st_size if path.exists() else None)
-    info["is_lfs_pointer_after"] = is_lfs_pointer(path) if path.exists() else None
-
-    if info["exists_after"] and checksum:
-        try:
-            calc = sha256_of(path)
-            info["checksum_ok"] = (calc.lower() == checksum.lower())
-            if not info["checksum_ok"]:
-                info["error"] = f"Checksum mismatch. expected={checksum} got={calc}"
-        except Exception as e:
-            info["error"] = f"Checksum calc failed: {e}"
-
-    return info
+        dl = download_model(url, path)
+        if dl.get("error"):
+            return {"error": dl["error"], "download_info": dl}
+    if not path.exists():
+        return {"error": "Model file not found after download"}
+    if checksum:
+        calc = sha256_of(path)
+        if calc.lower() != checksum.lower():
+            return {"error": f"Checksum mismatch. expected={checksum} got={calc}"}
+    return {"ok": True, "path": str(path), "size": path.stat().st_size}
 
 availability = ensure_model_available(MODEL_PATH, MODEL_URL, MODEL_SHA256)
 with st.expander("📦 Model availability & download status", expanded=True):
@@ -203,16 +114,6 @@ def try_load_model(model_path: Path):
         if not isinstance(bundle, dict) or "model" not in bundle:
             return None, "Bundle invalid (missing key 'model')."
         return bundle["model"], None
-    except ModuleNotFoundError as e:
-        return None, (
-            "ModuleNotFoundError saat unpickle. Tambahkan modul ke requirements.txt "
-            f"dan import kelas terkait. Detail: {e}"
-        )
-    except AttributeError as e:
-        return None, (
-            "AttributeError saat unpickle (versi paket berbeda?). "
-            f"Detail: {e}"
-        )
     except Exception as e:
         return None, f"Gagal load model: {e}"
 
